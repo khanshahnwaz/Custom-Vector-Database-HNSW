@@ -7,6 +7,8 @@ size_categories:
 - 100K<n<1M
 ---
 
+# OpenAI, all-MiniLM-L6-v2, GTE-small embeddings for Wikipedia Simple English
+
 Texts and OpenAI embeddings are genereted by Stephan Sturges, big thanks for sharing [this dataset](https://www.kaggle.com/datasets/stephanst/wikipedia-simple-openai-embeddings).
 
 Here we added embeddings for [`all-MiniLM-L6-v2`](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) and [`GTE-small`](https://huggingface.co/thenlper/gte-small).
