@@ -5,6 +5,10 @@
 #include "vector_store.h"
 #include "brute_force.h"
 
+#include <fstream>
+#include <cstdint>
+#include <stdexcept>
+
 using namespace std;
 
 class Node
@@ -48,6 +52,351 @@ long long neighborSelectionExamined = 0;
 
 public:
     HNSW(VectorStore &store,int M=16,int efConstruction=100) : store(store),M(M),efConstruction(efConstruction) { }
+
+
+
+
+
+
+
+void saveIndex(const string& filename) const
+{
+    if (nodes.empty())
+    {
+        throw runtime_error("Cannot save an empty HNSW index");
+    }
+
+    ofstream out(filename, ios::binary);
+
+    if (!out.is_open())
+    {
+        throw runtime_error("Could not open index file for writing");
+    }
+
+    // ------------------------------------------------
+    // Header
+    // ------------------------------------------------
+
+    const char magic[8] = {'H', 'N', 'S', 'W', 'I', 'D', 'X', '1'};
+
+    uint32_t version = 1;
+    uint32_t MValue = M;
+    uint32_t efValue = efConstruction;
+
+    uint32_t vectorCount = store.size();
+    uint32_t dimension = store.dim();
+    uint32_t nodeCount = nodes.size();
+
+    int32_t entryPoint = enterPoint;
+    int32_t highestLevel = maxLevel;
+
+    out.write(magic, sizeof(magic));
+
+    out.write(reinterpret_cast<const char*>(&version), sizeof(version));
+    out.write(reinterpret_cast<const char*>(&MValue), sizeof(MValue));
+    out.write(reinterpret_cast<const char*>(&efValue), sizeof(efValue));
+
+    out.write(reinterpret_cast<const char*>(&vectorCount), sizeof(vectorCount));
+    out.write(reinterpret_cast<const char*>(&dimension), sizeof(dimension));
+    out.write(reinterpret_cast<const char*>(&nodeCount), sizeof(nodeCount));
+
+    out.write(reinterpret_cast<const char*>(&entryPoint), sizeof(entryPoint));
+    out.write(reinterpret_cast<const char*>(&highestLevel), sizeof(highestLevel));
+
+    // ------------------------------------------------
+    // Serialize every node
+    // ------------------------------------------------
+
+    for (const Node& node : nodes)
+    {
+        int32_t nodeId = node.id;
+        uint32_t layerCount = node.neighbors.size();
+
+        out.write(reinterpret_cast<const char*>(&nodeId), sizeof(nodeId));
+
+        out.write(
+            reinterpret_cast<const char*>(&layerCount),
+            sizeof(layerCount)
+        );
+
+        // Serialize each layer's neighbor list
+        for (const auto& neighborList : node.neighbors)
+        {
+            uint32_t neighborCount = neighborList.size();
+
+            out.write(
+                reinterpret_cast<const char*>(&neighborCount),
+                sizeof(neighborCount)
+            );
+
+            for (int neighborId : neighborList)
+            {
+                int32_t id = neighborId;
+
+                out.write(
+                    reinterpret_cast<const char*>(&id),
+                    sizeof(id)
+                );
+            }
+        }
+    }
+
+    if (!out)
+    {
+        throw runtime_error("Error occurred while writing HNSW index");
+    }
+
+    out.close();
+
+    cout << "HNSW index saved successfully: "
+         << filename << '\n';
+}
+
+
+
+
+void loadIndex(const string& filename)
+{
+    ifstream in(filename, ios::binary);
+
+    if (!in.is_open())
+    {
+        throw runtime_error("Could not open HNSW index file");
+    }
+
+    // ------------------------------------------------
+    // 1. Read and validate header
+    // ------------------------------------------------
+
+    char magic[8];
+    const char expectedMagic[8] =
+        {'H', 'N', 'S', 'W', 'I', 'D', 'X', '1'};
+
+    in.read(magic, sizeof(magic));
+
+    if (!in || memcmp(magic, expectedMagic, 8) != 0)
+    {
+        throw runtime_error("Invalid HNSW index file");
+    }
+
+    uint32_t version;
+    uint32_t loadedM;
+    uint32_t loadedEfConstruction;
+
+    uint32_t vectorCount;
+    uint32_t dimension;
+    uint32_t nodeCount;
+
+    int32_t loadedEntryPoint;
+    int32_t loadedMaxLevel;
+
+    auto readValue = [&](auto& value)
+    {
+        in.read(
+            reinterpret_cast<char*>(&value),
+            sizeof(value)
+        );
+
+        if (!in)
+        {
+            throw runtime_error("Corrupted or incomplete index file");
+        }
+    };
+
+    readValue(version);
+    readValue(loadedM);
+    readValue(loadedEfConstruction);
+
+    readValue(vectorCount);
+    readValue(dimension);
+    readValue(nodeCount);
+
+    readValue(loadedEntryPoint);
+    readValue(loadedMaxLevel);
+
+    // ------------------------------------------------
+    // 2. Validate header values
+    // ------------------------------------------------
+
+    if (version != 1)
+    {
+        throw runtime_error("Unsupported HNSW index version");
+    }
+
+    if (loadedM == 0 || loadedEfConstruction == 0)
+    {
+        throw runtime_error("Invalid HNSW configuration");
+    }
+
+    if (vectorCount != store.size() ||
+        dimension != store.dim())
+    {
+        throw runtime_error("Index does not match vector dataset");
+    }
+
+    if (nodeCount == 0 || nodeCount > vectorCount)
+    {
+        throw runtime_error("Invalid node count");
+    }
+
+    if (loadedEntryPoint < 0 ||
+        loadedEntryPoint >= static_cast<int32_t>(nodeCount))
+    {
+        throw runtime_error("Invalid entry point");
+    }
+
+    if (loadedMaxLevel < 0 || loadedMaxLevel > 5)
+    {
+        throw runtime_error("Invalid maximum level");
+    }
+
+    // ------------------------------------------------
+    // 3. Reconstruct nodes into temporary storage
+    // ------------------------------------------------
+
+    vector<Node> loadedNodes(nodeCount);
+
+    for (uint32_t i = 0; i < nodeCount; i++)
+    {
+        int32_t nodeId;
+        uint32_t layerCount;
+
+        readValue(nodeId);
+        readValue(layerCount);
+
+        // Your current implementation requires node ID == index.
+        if (nodeId != static_cast<int32_t>(i))
+        {
+            throw runtime_error("Node ID/index mismatch");
+        }
+
+        if (layerCount == 0 || layerCount > 6)
+        {
+            throw runtime_error("Invalid node layer count");
+        }
+
+        Node node;
+        node.id = nodeId;
+        node.neighbors.resize(layerCount);
+
+        // Read every layer
+        for (uint32_t level = 0; level < layerCount; level++)
+        {
+            uint32_t neighborCount;
+            readValue(neighborCount);
+
+            if (neighborCount > loadedM)
+            {
+                throw runtime_error("Invalid neighbor count");
+            }
+
+            node.neighbors[level].resize(neighborCount);
+
+            for (uint32_t j = 0; j < neighborCount; j++)
+            {
+                int32_t neighborId;
+                readValue(neighborId);
+
+                if (neighborId < 0 ||
+                    neighborId >= static_cast<int32_t>(nodeCount))
+                {
+                    throw runtime_error("Invalid neighbor ID");
+                }
+
+                if (neighborId == nodeId)
+                {
+                    throw runtime_error("Self-loop detected");
+                }
+
+                node.neighbors[level][j] = neighborId;
+            }
+        }
+
+        loadedNodes[i] = move(node);
+    }
+
+    // ------------------------------------------------
+    // 4. Validate graph structure
+    // ------------------------------------------------
+
+    int actualMaxLevel = -1;
+
+    for (const Node& node : loadedNodes)
+    {
+        actualMaxLevel = max(
+            actualMaxLevel,
+            static_cast<int>(node.neighbors.size()) - 1
+        );
+
+        for (int level = 0;
+             level < static_cast<int>(node.neighbors.size());
+             level++)
+        {
+            const auto& neighbors = node.neighbors[level];
+
+            unordered_set<int> seen;
+
+            for (int neighborId : neighbors)
+            {
+                if (!seen.insert(neighborId).second)
+                {
+                    throw runtime_error("Duplicate neighbor detected");
+                }
+
+                const Node& neighbor = loadedNodes[neighborId];
+
+                if (level >= static_cast<int>(neighbor.neighbors.size()))
+                {
+                    throw runtime_error("Neighbor does not exist at this level");
+                }
+
+                const auto& reverseList = neighbor.neighbors[level];
+
+                if (find(
+                        reverseList.begin(),
+                        reverseList.end(),
+                        node.id
+                    ) == reverseList.end())
+                {
+                    throw runtime_error("Bidirectional edge validation failed");
+                }
+            }
+        }
+    }
+
+    if (actualMaxLevel != loadedMaxLevel)
+    {
+        throw runtime_error("Maximum level mismatch");
+    }
+
+    if (static_cast<int>(
+            loadedNodes[loadedEntryPoint].neighbors.size()
+        ) - 1 != loadedMaxLevel)
+    {
+        throw runtime_error("Entry point level mismatch");
+    }
+
+    // ------------------------------------------------
+    // 5. Commit reconstructed graph
+    // ------------------------------------------------
+
+    nodes = move(loadedNodes);
+
+    enterPoint = loadedEntryPoint;
+    maxLevel = loadedMaxLevel;
+
+    M = loadedM;
+    efConstruction = loadedEfConstruction;
+
+    cout << "HNSW index loaded successfully: "
+         << filename << '\n';
+
+    cout << "Nodes: " << nodes.size() << '\n';
+    cout << "Entry point: " << enterPoint << '\n';
+    cout << "Maximum level: " << maxLevel << '\n';
+}
+
+
 
 
 void printConstructionStats() const

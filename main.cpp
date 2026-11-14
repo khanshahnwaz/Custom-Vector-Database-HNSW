@@ -1,76 +1,88 @@
+
 #include <bits/stdc++.h>
 #include "vector_store.h"
-#include "distance.h"
-#include "brute_force.h"
+#include "hnsw.h"
 
 using namespace std;
-using namespace chrono;
 
-int main()
+int main(int argc, char* argv[])
 {
-    VectorStore store("vectors.bin");
+    try
+    {
+        if (argc < 2)
+        {
+            cout << "Usage:\n";
+            cout << "  main.exe build\n";
+            cout << "  main.exe load\n";
+            return 0;
+        }
 
-    int k = 10;
-    int numQueries = 100;
+        VectorStore store("vectors.bin");
 
-    long long totalTime = 0;
-    long long minTime = LLONG_MAX;
-    long long maxTime = 0;
+        string mode = argv[1];
 
-    vector<vector<int>> groundTruth(numQueries);
+        if (mode == "build")
+        {
+            cout << "Building HNSW index...\n";
 
-for (int queryId = 0; queryId < numQueries; queryId++)
-{
-    const vector<float>& query = store.getVector(queryId);
+            HNSW index(store, 16, 100);
 
-    auto start = high_resolution_clock::now();
+            for (int id = 0; id < 1000; id++)
+            {
+                index.insert(id);
+            }
 
-    vector<int> result =
-        bruteForceKNN(store, query, k);
+            index.validateGraph();
 
-    auto end = high_resolution_clock::now();
+            index.saveIndex("hnsw.index");
+        }
+        else if (mode == "load")
+        {
+            cout << "Loading existing HNSW index...\n";
 
-    long long duration =
-        duration_cast<microseconds>(end - start).count();
+            HNSW index(store);
 
-    totalTime += duration;
-    minTime = min(minTime, duration);
-    maxTime = max(maxTime, duration);
+            index.loadIndex("hnsw.index");
 
-    // Save exact nearest neighbors
-    groundTruth[queryId] = result;
-}
+            index.validateGraph();
 
+            // Query vector is outside the indexed range.
+            const vector<float>& query =
+                store.getVector(5000);
 
-cout << "\nGround truth for query 0:\n";
+            auto start = chrono::high_resolution_clock::now();
 
-for (int id : groundTruth[0])
-{
-    cout << id << ' ';
-}
+            vector<int> results =
+                index.search(query, 10, 50);
 
-cout << '\n';
-    double average =
-        static_cast<double>(totalTime) / numQueries;
+            auto end = chrono::high_resolution_clock::now();
 
-    cout << "Brute Force Benchmark\n";
-    cout << "---------------------\n";
-    cout << "Vectors: " << store.size() << '\n';
-    cout << "Dimension: " << store.dim() << '\n';
-    cout << "Queries: " << numQueries << '\n';
-    cout << "K: " << k << '\n';
+            auto latency =
+                chrono::duration_cast<chrono::microseconds>(
+                    end - start
+                ).count();
 
-    cout << "\nAverage latency: "
-         << average << " microseconds\n";
+            cout << "\nSearch results:\n";
 
-    cout << "Minimum latency: "
-         << minTime << " microseconds\n";
+            for (int id : results)
+            {
+                cout << id << " ";
+            }
 
-    cout << "Maximum latency: "
-         << maxTime << " microseconds\n";
-
-    cout << "Average latency: "
-         << average / 1000.0 << " ms\n";
+            cout << "\nSearch latency: "
+                 << latency << " microseconds\n";
+        }
+        else
+        {
+            cout << "Invalid mode. Use build or load.\n";
+            return 1;
+        }
+    }
+    catch (const exception& e)
+    {
+        cerr << "ERROR: " << e.what() << '\n';
+        return 1;
+    }
 
     return 0;
 }
