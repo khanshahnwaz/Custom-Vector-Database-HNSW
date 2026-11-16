@@ -69,7 +69,7 @@ using namespace std;
 //     where N = number of vectors
 //     and D = embedding dimension.
 // ------------------------------------------------------------
-vector<int> bruteForceKNN(
+inline vector<int> bruteForceKNN(
     VectorStore& store,
     const vector<float>& query,
     int k,

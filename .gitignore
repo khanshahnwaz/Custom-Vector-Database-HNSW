@@ -1,0 +1,10 @@
+*.exe
+*.o
+
+vectors.bin
+hnsw.index
+metadata.bin
+*.tmp
+
+metadata_corrupt.bin
+small_test.index

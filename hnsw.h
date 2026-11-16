@@ -1,5 +1,9 @@
 #pragma once
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
+#include <cstdio>
 #include <bits/stdc++.h>
 #include "distance.h"
 #include "vector_store.h"
@@ -55,6 +59,10 @@ public:
 
 
 
+int getNodeCount() const
+{
+    return static_cast<int>(nodes.size());
+}
 
 
 
@@ -66,91 +74,198 @@ void saveIndex(const string& filename) const
         throw runtime_error("Cannot save an empty HNSW index");
     }
 
-    ofstream out(filename, ios::binary);
+    if (enterPoint < 0 ||
+        enterPoint >= static_cast<int>(nodes.size()) ||
+        maxLevel < 0 || maxLevel > 5 ||
+        M <= 0 || efConstruction <= 0)
+    {
+        throw runtime_error("Invalid HNSW state. Cannot save index");
+    }
+
+    // Save to a temporary file first.
+    const string tempFilename = filename + ".tmp";
+
+    ofstream out(tempFilename, ios::binary | ios::trunc);
 
     if (!out.is_open())
     {
-        throw runtime_error("Could not open index file for writing");
+        throw runtime_error("Could not open temporary index file");
     }
 
-    // ------------------------------------------------
-    // Header
-    // ------------------------------------------------
-
-    const char magic[8] = {'H', 'N', 'S', 'W', 'I', 'D', 'X', '1'};
-
-    uint32_t version = 1;
-    uint32_t MValue = M;
-    uint32_t efValue = efConstruction;
-
-    uint32_t vectorCount = store.size();
-    uint32_t dimension = store.dim();
-    uint32_t nodeCount = nodes.size();
-
-    int32_t entryPoint = enterPoint;
-    int32_t highestLevel = maxLevel;
-
-    out.write(magic, sizeof(magic));
-
-    out.write(reinterpret_cast<const char*>(&version), sizeof(version));
-    out.write(reinterpret_cast<const char*>(&MValue), sizeof(MValue));
-    out.write(reinterpret_cast<const char*>(&efValue), sizeof(efValue));
-
-    out.write(reinterpret_cast<const char*>(&vectorCount), sizeof(vectorCount));
-    out.write(reinterpret_cast<const char*>(&dimension), sizeof(dimension));
-    out.write(reinterpret_cast<const char*>(&nodeCount), sizeof(nodeCount));
-
-    out.write(reinterpret_cast<const char*>(&entryPoint), sizeof(entryPoint));
-    out.write(reinterpret_cast<const char*>(&highestLevel), sizeof(highestLevel));
-
-    // ------------------------------------------------
-    // Serialize every node
-    // ------------------------------------------------
-
-    for (const Node& node : nodes)
+    try
     {
-        int32_t nodeId = node.id;
-        uint32_t layerCount = node.neighbors.size();
+        // ------------------------------------------------
+        // 1. Header
+        // ------------------------------------------------
 
-        out.write(reinterpret_cast<const char*>(&nodeId), sizeof(nodeId));
+        const char magic[8] =
+            {'H', 'N', 'S', 'W', 'I', 'D', 'X', '1'};
 
-        out.write(
-            reinterpret_cast<const char*>(&layerCount),
-            sizeof(layerCount)
-        );
+        uint32_t version = 1;
+        uint32_t MValue = static_cast<uint32_t>(M);
+        uint32_t efValue = static_cast<uint32_t>(efConstruction);
 
-        // Serialize each layer's neighbor list
-        for (const auto& neighborList : node.neighbors)
+        uint32_t vectorCount = store.size();
+        uint32_t dimension = store.dim();
+        uint32_t nodeCount = static_cast<uint32_t>(nodes.size());
+
+        int32_t entryPoint = enterPoint;
+        int32_t highestLevel = maxLevel;
+
+        // Helper to check every write operation.
+        auto writeValue = [&](const auto& value)
         {
-            uint32_t neighborCount = neighborList.size();
-
             out.write(
-                reinterpret_cast<const char*>(&neighborCount),
-                sizeof(neighborCount)
+                reinterpret_cast<const char*>(&value),
+                sizeof(value)
             );
 
-            for (int neighborId : neighborList)
+            if (!out)
             {
-                int32_t id = neighborId;
+                throw runtime_error("Error while writing HNSW index");
+            }
+        };
 
-                out.write(
-                    reinterpret_cast<const char*>(&id),
-                    sizeof(id)
-                );
+        out.write(magic, sizeof(magic));
+
+        if (!out)
+        {
+            throw runtime_error("Error while writing index signature");
+        }
+
+        writeValue(version);
+        writeValue(MValue);
+        writeValue(efValue);
+
+        writeValue(vectorCount);
+        writeValue(dimension);
+        writeValue(nodeCount);
+
+        writeValue(entryPoint);
+        writeValue(highestLevel);
+
+        // ------------------------------------------------
+        // 2. Serialize every node
+        // ------------------------------------------------
+
+        for (size_t i = 0; i < nodes.size(); i++)
+        {
+            const Node& node = nodes[i];
+
+            if (node.id != static_cast<int>(i))
+            {
+                throw runtime_error("Node ID/index mismatch");
+            }
+
+            if (node.neighbors.empty() ||
+                node.neighbors.size() > 6)
+            {
+                throw runtime_error("Invalid node layer count");
+            }
+
+            int32_t nodeId = node.id;
+
+            uint32_t layerCount =
+                static_cast<uint32_t>(node.neighbors.size());
+
+            writeValue(nodeId);
+            writeValue(layerCount);
+
+            // Serialize every layer.
+            for (const auto& neighborList : node.neighbors)
+            {
+                if (neighborList.size() > static_cast<size_t>(M))
+                {
+                    throw runtime_error("Invalid neighbor count");
+                }
+
+                uint32_t neighborCount =
+                    static_cast<uint32_t>(neighborList.size());
+
+                writeValue(neighborCount);
+
+                for (int neighborId : neighborList)
+                {
+                    if (neighborId < 0 ||
+                        neighborId >= static_cast<int>(nodes.size()) ||
+                        neighborId == node.id)
+                    {
+                        throw runtime_error("Invalid neighbor ID");
+                    }
+
+                    int32_t id = neighborId;
+
+                    writeValue(id);
+                }
             }
         }
-    }
 
-    if (!out)
+        // ------------------------------------------------
+        // 3. Flush and close temporary file
+        // ------------------------------------------------
+
+        out.flush();
+
+        if (!out)
+        {
+            throw runtime_error("Failed to flush temporary index file");
+        }
+
+        out.close();
+
+        if (out.fail())
+        {
+            throw runtime_error("Failed to close temporary index file");
+        }
+
+        // ------------------------------------------------
+        // 4. Replace the original index
+        // ------------------------------------------------
+
+#ifdef _WIN32
+
+        // Windows: replace existing file atomically.
+        // MoveFileExW is used through the Windows API.
+        if (!MoveFileExA(
+                tempFilename.c_str(),
+                filename.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            throw runtime_error(
+                "Could not replace existing HNSW index file"
+            );
+        }
+
+#else
+
+        // POSIX: rename replaces the destination atomically
+        // when both files are on the same filesystem.
+        if (rename(tempFilename.c_str(), filename.c_str()) != 0)
+        {
+            throw runtime_error(
+                "Could not replace existing HNSW index file"
+            );
+        }
+
+#endif
+
+        cout << "HNSW index saved successfully: "
+             << filename << '\n';
+    }
+    catch (...)
     {
-        throw runtime_error("Error occurred while writing HNSW index");
+        if (out.is_open())
+        {
+            out.close();
+        }
+
+        // Remove incomplete temporary file.
+        remove(tempFilename.c_str());
+
+        throw;
     }
-
-    out.close();
-
-    cout << "HNSW index saved successfully: "
-         << filename << '\n';
 }
+
 
 
 
@@ -165,10 +280,39 @@ void loadIndex(const string& filename)
     }
 
     // ------------------------------------------------
-    // 1. Read and validate header
+    // 1. Validate file size
+    // ------------------------------------------------
+
+    in.seekg(0, ios::end);
+
+    streamoff fileSize = in.tellg();
+
+    if (fileSize < 0)
+    {
+        throw runtime_error("Could not determine index file size");
+    }
+
+    constexpr streamoff headerSize =
+        8 + 6 * sizeof(uint32_t) + 2 * sizeof(int32_t);
+
+    if (fileSize < headerSize)
+    {
+        throw runtime_error("Index file is too small");
+    }
+
+    in.seekg(0, ios::beg);
+
+    if (!in)
+    {
+        throw runtime_error("Could not reset index file position");
+    }
+
+    // ------------------------------------------------
+    // 2. Read and validate header
     // ------------------------------------------------
 
     char magic[8];
+
     const char expectedMagic[8] =
         {'H', 'N', 'S', 'W', 'I', 'D', 'X', '1'};
 
@@ -215,7 +359,7 @@ void loadIndex(const string& filename)
     readValue(loadedMaxLevel);
 
     // ------------------------------------------------
-    // 2. Validate header values
+    // 3. Validate header values
     // ------------------------------------------------
 
     if (version != 1)
@@ -228,15 +372,38 @@ void loadIndex(const string& filename)
         throw runtime_error("Invalid HNSW configuration");
     }
 
+    if (loadedM > static_cast<uint32_t>(INT32_MAX) ||
+        loadedEfConstruction > static_cast<uint32_t>(INT32_MAX))
+    {
+        throw runtime_error("HNSW configuration exceeds supported integer range");
+    }
+
     if (vectorCount != store.size() ||
         dimension != store.dim())
     {
         throw runtime_error("Index does not match vector dataset");
     }
 
-    if (nodeCount == 0 || nodeCount > vectorCount)
+    if (nodeCount == 0 || nodeCount > vectorCount ||
+        nodeCount > static_cast<uint32_t>(INT32_MAX))
     {
         throw runtime_error("Invalid node count");
+    }
+
+    // Each node requires at least 12 bytes:
+    // nodeId + layerCount + one neighborCount.
+
+    uint64_t remainingBytes =
+        static_cast<uint64_t>(fileSize - headerSize);
+
+    uint64_t minimumRequiredBytes =
+        static_cast<uint64_t>(nodeCount) * 12;
+
+    if (minimumRequiredBytes > remainingBytes)
+    {
+        throw runtime_error(
+            "Index file is too small for declared node count"
+        );
     }
 
     if (loadedEntryPoint < 0 ||
@@ -251,7 +418,7 @@ void loadIndex(const string& filename)
     }
 
     // ------------------------------------------------
-    // 3. Reconstruct nodes into temporary storage
+    // 4. Reconstruct nodes into temporary storage
     // ------------------------------------------------
 
     vector<Node> loadedNodes(nodeCount);
@@ -264,7 +431,7 @@ void loadIndex(const string& filename)
         readValue(nodeId);
         readValue(layerCount);
 
-        // Your current implementation requires node ID == index.
+        // Current implementation requires node ID == index.
         if (nodeId != static_cast<int32_t>(i))
         {
             throw runtime_error("Node ID/index mismatch");
@@ -276,13 +443,15 @@ void loadIndex(const string& filename)
         }
 
         Node node;
+
         node.id = nodeId;
         node.neighbors.resize(layerCount);
 
-        // Read every layer
+        // Read every layer.
         for (uint32_t level = 0; level < layerCount; level++)
         {
             uint32_t neighborCount;
+
             readValue(neighborCount);
 
             if (neighborCount > loadedM)
@@ -290,11 +459,27 @@ void loadIndex(const string& filename)
                 throw runtime_error("Invalid neighbor count");
             }
 
+            // Ensure the file contains enough bytes for this list.
+            uint64_t requiredBytes =
+                static_cast<uint64_t>(neighborCount) * sizeof(int32_t);
+
+            streamoff currentPosition = in.tellg();
+
+            if (currentPosition < 0 ||
+                requiredBytes >
+                    static_cast<uint64_t>(fileSize - currentPosition))
+            {
+                throw runtime_error(
+                    "Incomplete neighbor list in index file"
+                );
+            }
+
             node.neighbors[level].resize(neighborCount);
 
             for (uint32_t j = 0; j < neighborCount; j++)
             {
                 int32_t neighborId;
+
                 readValue(neighborId);
 
                 if (neighborId < 0 ||
@@ -316,7 +501,16 @@ void loadIndex(const string& filename)
     }
 
     // ------------------------------------------------
-    // 4. Validate graph structure
+    // 5. Check for unexpected trailing data
+    // ------------------------------------------------
+
+    if (in.tellg() != fileSize)
+    {
+        throw runtime_error("Unexpected trailing data in index file");
+    }
+
+    // ------------------------------------------------
+    // 6. Validate graph structure
     // ------------------------------------------------
 
     int actualMaxLevel = -1;
@@ -347,7 +541,9 @@ void loadIndex(const string& filename)
 
                 if (level >= static_cast<int>(neighbor.neighbors.size()))
                 {
-                    throw runtime_error("Neighbor does not exist at this level");
+                    throw runtime_error(
+                        "Neighbor does not exist at this level"
+                    );
                 }
 
                 const auto& reverseList = neighbor.neighbors[level];
@@ -358,7 +554,9 @@ void loadIndex(const string& filename)
                         node.id
                     ) == reverseList.end())
                 {
-                    throw runtime_error("Bidirectional edge validation failed");
+                    throw runtime_error(
+                        "Bidirectional edge validation failed"
+                    );
                 }
             }
         }
@@ -377,9 +575,10 @@ void loadIndex(const string& filename)
     }
 
     // ------------------------------------------------
-    // 5. Commit reconstructed graph
+    // 7. Commit reconstructed graph
     // ------------------------------------------------
 
+    // The active graph is modified only after all checks pass.
     nodes = move(loadedNodes);
 
     enterPoint = loadedEntryPoint;

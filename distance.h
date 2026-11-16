@@ -3,7 +3,7 @@
 #include <bits/stdc++.h>
 using namespace std;
 
-float euclidean(
+inline float euclidean(
     const vector<float>& a,
     const vector<float>& b)
 {
@@ -22,7 +22,7 @@ float euclidean(
 }
 
 
-float cosineDistance(
+inline float cosineDistance(
     const vector<float>& a,
     const vector<float>& b)
 {
