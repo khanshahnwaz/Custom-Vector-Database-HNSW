@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <exception>
+#include <iomanip>
 
 #include "vector_database.h"
 
@@ -12,35 +13,21 @@ int main()
 {
     try
     {
-        // Create database.
         VectorDatabase db(
             "vectors.bin",
             "hnsw.index",
             10000,
-            16,              // M
-            100,             // efConstruction
-            50,              // efSearch
+            16,
+            100,
+            50,
             "metadata.bin"
         );
 
-        // Initialize database.
+        // Initialize.
         auto startupStart =
             chrono::high_resolution_clock::now();
 
         db.initialize();
-
-
-        try
-{
-    db.getMetadata(500);
-
-    cout << "FAILED: Missing metadata was accepted.\n";
-}
-catch (const out_of_range& e)
-{
-    cout << "PASSED: Missing metadata rejected.\n";
-    cout << e.what() << "\n";
-}
 
         auto startupEnd =
             chrono::high_resolution_clock::now();
@@ -54,7 +41,6 @@ catch (const out_of_range& e)
              << startupTime << " milliseconds\n";
 
 
-        // Database information.
         cout << "\nDatabase information:\n";
 
         cout << "Total vectors: "
@@ -67,51 +53,58 @@ catch (const out_of_range& e)
              << db.metadataCount() << "\n";
 
 
-        // Add metadata to an existing vector.
-        // These are demonstration records, not actual
-        // descriptions of the underlying embeddings.
-        Metadata metadata;
-
-        metadata.title = "Update Document 100";
-        metadata.category = "Technology";
-        metadata.source = "Example Dataset";
-        metadata.documentId = "DOC-100";
-
-        db.setMetadata(100, metadata);
+        // Query vector.
+        const vector<float>& query = db.getVector(10000);
 
 
-        Metadata secondMetadata;
+        // First retrieve the normal top 10.
+        vector<int> initialResults = db.search(query, 10);
 
-        secondMetadata.title = "Example Document 200";
-        secondMetadata.category = "Science";
-        secondMetadata.source = "Example Dataset";
-        secondMetadata.documentId = "DOC-200";
+        cout << "\nUnfiltered search results:\n";
 
-        db.setMetadata(200, secondMetadata);
-
-
-        // Retrieve metadata.
-        cout << "\nMetadata for vector ID 100:\n";
-
-        if (db.hasMetadata(100))
+        for (size_t i = 0; i < initialResults.size(); i++)
         {
-            const Metadata& result = db.getMetadata(100);
-
-            cout << "Title: " << result.title << "\n";
-            cout << "Category: " << result.category << "\n";
-            cout << "Source: " << result.source << "\n";
-            cout << "Document ID: "
-                 << result.documentId << "\n";
+            cout << initialResults[i] << "\n";
         }
 
 
-        // Search using a held-out vector.
-        const vector<float>& query = db.getVector(10000);
+        // Assign synthetic metadata for demonstration.
+        // First three candidates belong to Technology.
+        // Remaining candidates belong to Science.
+        for (size_t i = 0; i < initialResults.size(); i++)
+        {
+            Metadata metadata;
 
+            metadata.title =
+                "Demo Document " + to_string(initialResults[i]);
+
+            metadata.category =
+                (i < 3) ? "Technology" : "Science";
+
+            metadata.source = "Demo Dataset";
+
+            metadata.documentId =
+                "DOC-" + to_string(initialResults[i]);
+
+            db.setMetadata(
+                static_cast<uint32_t>(initialResults[i]),
+                metadata
+            );
+        }
+
+
+        // Configure metadata filter.
+        SearchFilter filter;
+
+        filter.category = "Technology";
+
+
+        // Search for three matching results.
         auto searchStart =
             chrono::high_resolution_clock::now();
 
-        vector<int> results = db.search(query, 10);
+        vector<SearchResult> results =
+            db.search(query, 3, filter);
 
         auto searchEnd =
             chrono::high_resolution_clock::now();
@@ -122,32 +115,147 @@ catch (const out_of_range& e)
             ).count();
 
 
-        cout << "\nSearch results:\n";
+        cout << "\nFiltered search results:\n";
 
-        for (int id : results)
+        cout << "Filter: category = Technology\n\n";
+
+        for (size_t i = 0; i < results.size(); i++)
         {
-            cout << id;
+            cout << "Vector ID: "
+                 << results[i].id << "\n";
 
-            if (db.hasMetadata(id))
+            cout << "Distance: "
+                 << fixed << setprecision(6)
+                 << results[i].distance << "\n";
+
+            if (results[i].hasMetadata)
             {
-                const Metadata& metadata =
-                    db.getMetadata(id);
+                cout << "Title: "
+                     << results[i].metadata.title << "\n";
 
-                cout << " | " << metadata.title;
+                cout << "Category: "
+                     << results[i].metadata.category << "\n";
+
+                cout << "Source: "
+                     << results[i].metadata.source << "\n";
             }
 
-            cout << "\n";
+            cout << "--------------------------\n";
         }
 
-        cout << "\nSearch latency: "
+        cout << "\nFiltered search returned: "
+             << results.size() << " results\n";
+
+        cout << "Search latency: "
              << searchLatency << " microseconds\n";
 
 
-        // Persist HNSW and metadata.
+        // Save metadata and index.
         db.save();
 
         cout << "\nMetadata record count: "
              << db.metadataCount() << "\n";
+
+
+
+
+
+             SearchFilter combinedFilter;
+
+combinedFilter.category = "Technology";
+combinedFilter.source = "Demo Dataset";
+
+vector<SearchResult> combinedResults =
+    db.search(query, 3, combinedFilter);
+
+cout << "\nMultiple-filter results:\n";
+
+for (const SearchResult& result : combinedResults)
+{
+    cout << result.id << " | "
+         << result.metadata.category << " | "
+         << result.metadata.source << "\n";
+}
+
+
+
+
+
+SearchFilter sourceFilter;
+
+sourceFilter.source = "Example Dataset";
+
+vector<SearchResult> sourceResults =
+    db.search(query, 5, sourceFilter);
+
+cout << "\nSource-only filter results:\n";
+
+for (const SearchResult& result : sourceResults)
+{
+    cout << result.id << " | "
+         << result.metadata.source << "\n";
+}
+
+
+
+SearchFilter noMatchFilter;
+noMatchFilter.category = "NonExistentCategory";
+
+vector<SearchResult> noMatchResults =
+    db.search(query, 5, noMatchFilter);
+
+cout << "\nNo-match filter results:\n";
+cout << "Results returned: " << noMatchResults.size() << "\n";
+
+
+
+
+
+SearchFilter limitedFilter;
+limitedFilter.source = "Example Dataset";
+
+vector<SearchResult> limitedResults =
+    db.search(query, 5, limitedFilter);
+
+cout << "\nFewer-than-K filter test:\n";
+cout << "Requested: 5\n";
+cout << "Returned: " << limitedResults.size() << "\n";
+
+for (const SearchResult& result : limitedResults) {
+    cout << result.id << " | "
+         << result.metadata.source << "\n";
+}
+
+
+
+SearchFilter emptyFilter;
+
+vector<SearchResult> emptyFilterResults =
+    db.search(query, 10, emptyFilter);
+
+cout << "\nEmpty-filter test:\n";
+
+for (const SearchResult& result : emptyFilterResults) {
+    cout << result.id << "\n";
+}
+
+
+
+
+SearchFilter missingMetadataFilter;
+missingMetadataFilter.category = "Technology";
+
+vector<SearchResult> metadataResults =
+    db.search(query, 10, missingMetadataFilter);
+
+cout << "\nMissing-metadata validation:\n";
+
+for (const SearchResult& result : metadataResults) {
+    cout << result.id
+         << " | Has metadata: "
+         << (db.hasMetadata(result.id) ? "Yes" : "No")
+         << "\n";
+}
     }
     catch (const exception& e)
     {

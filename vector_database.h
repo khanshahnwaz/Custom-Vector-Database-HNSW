@@ -8,6 +8,7 @@
 #include "vector_store.h"
 #include "hnsw.h"
 #include "metadata_store.h"
+#include "search_types.h"
 
 using namespace std;
 
@@ -42,9 +43,17 @@ public:
 
     void initialize();
 
+    // Existing search API: returns vector IDs.
     vector<int> search(
         const vector<float>& query,
         int k
+    );
+
+    // New filtered search API: returns detailed results.
+    vector<SearchResult> search(
+        const vector<float>& query,
+        int k,
+        const SearchFilter& filter
     );
 
     void save() const;

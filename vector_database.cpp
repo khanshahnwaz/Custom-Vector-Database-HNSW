@@ -1,14 +1,17 @@
 
 #include "vector_database.h"
+#include "distance.h"
 
 #include <iostream>
 #include <fstream>
 #include <stdexcept>
 #include <limits>
+#include <algorithm>
 
 using namespace std;
 
 
+// Check whether a file exists.
 static bool fileExists(const string& filename)
 {
     ifstream file(filename.c_str(), ios::binary);
@@ -16,6 +19,43 @@ static bool fileExists(const string& filename)
 }
 
 
+// Check whether a metadata record satisfies all filters.
+static bool matchesFilter(
+    const Metadata& metadata,
+    const SearchFilter& filter
+)
+{
+    if (!filter.title.empty() &&
+        metadata.title != filter.title)
+        return false;
+
+    if (!filter.category.empty() &&
+        metadata.category != filter.category)
+        return false;
+
+    if (!filter.source.empty() &&
+        metadata.source != filter.source)
+        return false;
+
+    if (!filter.documentId.empty() &&
+        metadata.documentId != filter.documentId)
+        return false;
+
+    return true;
+}
+
+
+// Check whether at least one filter is specified.
+static bool hasActiveFilter(const SearchFilter& filter)
+{
+    return !filter.title.empty() ||
+           !filter.category.empty() ||
+           !filter.source.empty() ||
+           !filter.documentId.empty();
+}
+
+
+// Constructor.
 VectorDatabase::VectorDatabase(
     const string& vectorFilename,
     const string& indexFilename,
@@ -91,7 +131,7 @@ void VectorDatabase::initialize()
         {
             throw runtime_error(
                 "Loaded index node count does not match "
-                "the configured indexed vector count"
+                "configured indexed vector count"
             );
         }
 
@@ -122,7 +162,7 @@ void VectorDatabase::initialize()
 
     index.validateGraph();
 
-    // Load metadata if the file exists.
+    // Load metadata.
     if (fileExists(metadataFilename))
     {
         metadataStore.load(
@@ -142,7 +182,7 @@ void VectorDatabase::initialize()
 }
 
 
-// Search.
+// Existing unfiltered search.
 vector<int> VectorDatabase::search(
     const vector<float>& query,
     int k
@@ -173,7 +213,173 @@ vector<int> VectorDatabase::search(
 }
 
 
-// Save both HNSW and metadata.
+// New filtered search.
+vector<SearchResult> VectorDatabase::search(
+    const vector<float>& query,
+    int k,
+    const SearchFilter& filter
+)
+{
+    if (!initialized)
+    {
+        throw logic_error(
+            "Database must be initialized before searching"
+        );
+    }
+
+    if (query.size() != store.dim())
+    {
+        throw invalid_argument(
+            "Query dimension does not match vector dimension"
+        );
+    }
+
+    if (k <= 0)
+    {
+        throw invalid_argument(
+            "k must be positive"
+        );
+    }
+
+    bool filtering = hasActiveFilter(filter);
+
+    // Initial candidate count.
+    int candidateCount;
+
+    if (filtering)
+    {
+        long long desiredCount = max(
+            static_cast<long long>(k) * 10,
+            static_cast<long long>(efSearch)
+        );
+
+        candidateCount = static_cast<int>(
+            min(
+                static_cast<long long>(indexedVectorCount),
+                desiredCount
+            )
+        );
+    }
+    else
+    {
+        candidateCount = k;
+    }
+
+    vector<SearchResult> results;
+
+    while (true)
+    {
+        // When filtering, increase efSearch to allow
+        // HNSW to return the larger candidate pool.
+        int currentEfSearch = filtering
+            ? max(efSearch, candidateCount)
+            : efSearch;
+
+        vector<int> candidates = index.search(
+            query,
+            candidateCount,
+            currentEfSearch
+        );
+
+        results.clear();
+
+        // Examine retrieved candidates.
+        for (size_t i = 0; i < candidates.size(); i++)
+        {
+            int id = candidates[i];
+
+            bool metadataExists =
+                metadataStore.contains(
+                    static_cast<uint32_t>(id)
+                );
+
+            // If filters are active, missing metadata
+            // cannot satisfy the filter.
+            if (filtering && !metadataExists)
+            {
+                continue;
+            }
+
+            Metadata metadata;
+
+            if (metadataExists)
+            {
+                metadata = metadataStore.get(
+                    static_cast<uint32_t>(id)
+                );
+            }
+
+            // Apply metadata conditions.
+            if (filtering &&
+                !matchesFilter(metadata, filter))
+            {
+                continue;
+            }
+
+            SearchResult result;
+
+            result.id = static_cast<uint32_t>(id);
+
+            result.distance = cosineDistance(
+                query,
+                store.getVector(
+                    static_cast<uint32_t>(id)
+                )
+            );
+
+            result.hasMetadata = metadataExists;
+            result.metadata = metadata;
+
+            results.push_back(result);
+        }
+
+        // Sort by ascending cosine distance.
+        sort(
+            results.begin(),
+            results.end(),
+            [](const SearchResult& a, const SearchResult& b)
+            {
+                return a.distance < b.distance;
+            }
+        );
+
+        // Stop if enough results were found.
+        if (static_cast<int>(results.size()) >= k)
+        {
+            break;
+        }
+
+        // Stop if all configured index candidates
+        // have been requested.
+        if (!filtering ||
+            candidateCount >= static_cast<int>(indexedVectorCount))
+        {
+            break;
+        }
+
+        // Progressively increase candidate count.
+        long long nextCount =
+            static_cast<long long>(candidateCount) * 2;
+
+        candidateCount = static_cast<int>(
+            min(
+                static_cast<long long>(indexedVectorCount),
+                nextCount
+            )
+        );
+    }
+
+    // Return no more than k results.
+    if (static_cast<int>(results.size()) > k)
+    {
+        results.resize(k);
+    }
+
+    return results;
+}
+
+
+// Save HNSW and metadata.
 void VectorDatabase::save() const
 {
     if (!initialized)
@@ -250,7 +456,7 @@ bool VectorDatabase::hasMetadata(uint32_t id) const
 }
 
 
-// Number of metadata records.
+// Metadata record count.
 uint32_t VectorDatabase::metadataCount() const
 {
     return metadataStore.size();
