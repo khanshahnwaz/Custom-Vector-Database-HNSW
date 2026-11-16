@@ -1,0 +1,5 @@
+A vector database stores numerical representations
+of data called embeddings. These embeddings allow
+semantic similarity search. HNSW is an approximate
+nearest neighbor algorithm used to efficiently search
+high-dimensional vector spaces.

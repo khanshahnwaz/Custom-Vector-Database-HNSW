@@ -664,6 +664,24 @@ void printConstructionStats() const
 // ------------------------------------------------------------
 void insert(int id)
 {
+    // Vector IDs must remain identical to their positions in both
+    // VectorStore and the HNSW nodes array. This is essential when
+    // appending document chunks to an existing index.
+    if (id < 0)
+    {
+        throw invalid_argument("HNSW node ID cannot be negative");
+    }
+
+    if (static_cast<uint32_t>(id) >= store.size())
+    {
+        throw out_of_range("HNSW node ID has no corresponding stored vector");
+    }
+
+    if (id != static_cast<int>(nodes.size()))
+    {
+        throw logic_error("HNSW nodes must be inserted using the next sequential vector ID");
+    }
+
     // ------------------------------------------------------------
     // Create the node and assign its randomly generated maximum
     // level.

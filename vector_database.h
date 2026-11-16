@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <string>
@@ -15,26 +14,24 @@ using namespace std;
 class VectorDatabase
 {
 private:
+    // Keep this order: HNSW stores a reference to VectorStore.
     VectorStore store;
     HNSW index;
     MetadataStore metadataStore;
 
+    string vectorFilename;
     string indexFilename;
     string metadataFilename;
 
-    uint32_t indexedVectorCount;
-
     int efSearch;
-
     bool initialized;
     bool initializationAttempted;
 
 public:
-
     VectorDatabase(
         const string& vectorFilename,
         const string& indexFilename,
-        uint32_t indexedVectorCount,
+        uint32_t initialVectorCount,
         int M = 16,
         int efConstruction = 100,
         int efSearch = 50,
@@ -43,13 +40,15 @@ public:
 
     void initialize();
 
-    // Existing search API: returns vector IDs.
-    vector<int> search(
-        const vector<float>& query,
-        int k
+    // Ingests a vector batch and matching JSONL metadata batch.
+    // New IDs are assigned sequentially after the existing corpus.
+    // The operation persists the updated vector store, metadata, and index.
+    uint32_t ingest(
+        const string& embeddingFilename,
+        const string& metadataJsonlFilename
     );
 
-    // New filtered search API: returns detailed results.
+    vector<int> search(const vector<float>& query, int k);
     vector<SearchResult> search(
         const vector<float>& query,
         int k,
@@ -59,22 +58,11 @@ public:
     void save() const;
 
     const vector<float>& getVector(uint32_t id) const;
-
-    // Metadata operations.
-    void setMetadata(
-        uint32_t id,
-        const Metadata& metadata
-    );
-
+    void setMetadata(uint32_t id, const Metadata& metadata);
     const Metadata& getMetadata(uint32_t id) const;
-
     bool hasMetadata(uint32_t id) const;
-
     uint32_t metadataCount() const;
-
     uint32_t size() const;
-
     uint32_t dimension() const;
-
     bool isInitialized() const;
 };
